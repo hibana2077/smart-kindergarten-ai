@@ -120,7 +120,7 @@ please use JSON format to answer, including the following fields:
 # 使用範例
 def main():
     # 初始化生成器（請替換為您的API密鑰）
-    generator = ArtLessonGenerator("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")
+    generator = ArtLessonGenerator("")
     
     # 生成幾何圖形教案
     geometry_lesson = generator.generate_lesson(

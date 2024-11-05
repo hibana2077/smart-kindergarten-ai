@@ -224,7 +224,7 @@ class ArtTemplateGenerator:
 
 def main():
     # 初始化生成器（請替換為您的API密鑰）
-    generator = ArtTemplateGenerator("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")
+    generator = ArtTemplateGenerator("")
     
     # 測試教案內容
     lesson_content = """
