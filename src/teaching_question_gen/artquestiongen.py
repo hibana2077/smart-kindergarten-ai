@@ -1,7 +1,8 @@
-from typing import List, Dict, Optional
+from typing import List, Dict
 import json
 from dataclasses import dataclass
-import random
+from groq import Groq
+
 
 @dataclass
 class ImageTemplate:
@@ -12,22 +13,14 @@ class ImageTemplate:
     description: str
 
 class ArtTemplateGenerator:
-    def __init__(self, llm_model_path: str):
+    def __init__(self, groq_api_key: str):
         """初始化模板生成器
         
         Args:
-            llm_model_path: LLM模型路徑
+            groq_api_key: Groq API密鑰
         """
-        self.llm = self._init_llm(llm_model_path)
+        self.client = Groq(api_key=groq_api_key)
         self.templates = self._load_templates()
-        
-    def _init_llm(self, model_path: str):
-        """初始化LLM模型"""
-        # 這裡可以根據需求使用不同的LLM實現
-        from transformers import AutoTokenizer, AutoModelForCausalLM
-        tokenizer = AutoTokenizer.from_pretrained(model_path)
-        model = AutoModelForCausalLM.from_pretrained(model_path)
-        return {"model": model, "tokenizer": tokenizer}
 
     def _load_templates(self) -> Dict[str, ImageTemplate]:
         """載入預定義的SVG模板"""
@@ -118,19 +111,40 @@ class ArtTemplateGenerator:
 
     def _get_llm_prompt(self, lesson_content: str) -> str:
         """生成提示語句讓LLM選擇合適的模板"""
-        return f"""基於以下教案內容，請選擇最適合的圖像模板組合，並說明如何調整其參數：
+        templates_info = []
+        for name, template in self.templates.items():
+            param_info = json.dumps(template.parameters, indent=2)
+            templates_info.append(f"""- {name}: 
+描述: {template.description}
+所需參數: {param_info}""")
+        
+        prompt = f"""基於以下教案內容，請選擇最適合的圖像模板組合，並說明如何調整其參數：
 
 教案內容：
 {lesson_content}
 
-可用的模板有：
-{self._get_template_descriptions()}
+可用的模板和其參數要求：
+{"".join(templates_info)}
 
-請用JSON格式回答，包含：
-1. 選擇的模板列表
-2. 每個模板的參數調整
-3. 使用理由
-"""
+    Please provide the following information in JSON format:
+    {{
+        "templates": ["template_name1", "template_name2"],
+        "parameters": {{
+            "template_name1": {{
+                // 請使用上述列出的模板所需參數
+                // 如果未指定某參數，將使用預設值
+            }},
+            "template_name2": {{
+                // 請使用上述列出的模板所需參數
+                // 如果未指定某參數，將使用預設值
+            }}
+        }},
+        "reasons": ["reason1", "reason2"]
+    }}
+
+    注意：每個模板的參數必須完全符合其要求的參數名稱。"""
+
+        return prompt
 
     def _get_template_descriptions(self) -> str:
         """獲取所有模板的描述"""
@@ -155,34 +169,62 @@ class ArtTemplateGenerator:
         Returns:
             生成的SVG圖像列表
         """
-        # 1. 讓LLM分析教案並選擇模板
+        # 使用Groq API進行推論
         prompt = self._get_llm_prompt(lesson_content)
-        inputs = self.llm["tokenizer"](prompt, return_tensors="pt")
-        outputs = self.llm["model"].generate(inputs["input_ids"])
-        llm_response = self.llm["tokenizer"].decode(outputs[0])
+        completion = self.client.chat.completions.create(
+            model="llama-3.1-70b-versatile",
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            temperature=0.7,
+            max_tokens=1024,
+            top_p=1,
+            response_format={"type": "json_object"},
+            stream=False
+        )
         
-        # 2. 解析LLM的建議
-        template_choices = self._parse_llm_response(llm_response)
+        # 解析回應
+        try:
+            template_choices = json.loads(completion.choices[0].message.content)
+        except json.JSONDecodeError:
+            return []
         
-        # 3. 生成圖像
+        # 生成圖像
         generated_images = []
         for template_name in template_choices.get("templates", []):
             if template_name in self.templates:
                 template = self.templates[template_name]
-                parameters = template_choices.get("parameters", {}).get(template_name, template.parameters)
+                # 獲取LLM建議的參數
+                llm_params = template_choices.get("parameters", {}).get(template_name, {})
                 
-                svg = template.svg_template.format(**parameters)
-                generated_images.append({
-                    "name": template_name,
-                    "svg": svg,
-                    "parameters": parameters
-                })
+                # 合併預設參數和LLM建議的參數
+                merged_parameters = template.parameters.copy()  # 先複製預設參數
+                merged_parameters.update(llm_params)  # 再更新LLM建議的參數
                 
+                try:
+                    svg = template.svg_template.format(**merged_parameters)
+                    generated_images.append({
+                        "name": template_name,
+                        "svg": svg,
+                        "parameters": merged_parameters,
+                        "reason": next((reason for reason in template_choices.get("reasons", []) 
+                                    if template_name in reason.lower()), "")
+                    })
+                except KeyError as e:
+                    print(f"Warning: Missing parameter {e} for template {template_name}")
+                    continue
+                except Exception as e:
+                    print(f"Error generating SVG for template {template_name}: {e}")
+                    continue
+                    
         return generated_images
 
 def main():
-    # 初始化生成器
-    generator = ArtTemplateGenerator("path/to/your/llm/model")
+    # 初始化生成器（請替換為您的API密鑰）
+    generator = ArtTemplateGenerator("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")
     
     # 測試教案內容
     lesson_content = """
@@ -199,13 +241,38 @@ def main():
     
     # 生成圖像
     images = generator.generate_images(lesson_content)
-    
+    import os
+
     # 輸出結果
+    # Ensure the output directory exists
+    os.makedirs("output", exist_ok=True)
+    
     for image in images:
         print(f"Generated {image['name']}:")
         print(image['svg'])
         print("Parameters:", image['parameters'])
+        print("Reason:", image['reason'])
         print("-" * 50)
+
+    # convert svgs to one image
+    from datetime import datetime
+    from svglib.svglib import svg2rlg
+    from reportlab.graphics import renderPDF, renderPM
+    from PyPDF2 import PdfMerger
+
+    pdf_merger = PdfMerger()
+    for i, image in enumerate(images):
+        svg_file = f"output/{image['name']}.svg"
+        pdf_file = f"output/{image['name']}.pdf"
+        with open(svg_file, 'w') as f:
+            f.write(image['svg'])
+        drawing = svg2rlg(svg_file)
+        renderPDF.drawToFile(drawing, pdf_file)
+        pdf_merger.append(pdf_file)
+        print(f"Saved {image['name']} as {pdf_file}")
+
+    pdf_merger.write(f"output/{datetime.now().strftime('%Y%m%d%H%M%S')}_output.pdf")
+    pdf_merger.close()
 
 if __name__ == "__main__":
     main()

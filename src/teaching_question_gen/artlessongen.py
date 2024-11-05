@@ -1,17 +1,16 @@
 from typing import List, Dict
 import json
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from groq import Groq
 import pandas as pd
 
 class ArtLessonGenerator:
-    def __init__(self, model_path: str):
+    def __init__(self, groq_api_key: str):
         """初始化美術教案生成器
         
         Args:
-            model_path: 微調後的模型路徑
+            groq_api_key: Groq API密鑰
         """
-        self.tokenizer = AutoTokenizer.from_pretrained(model_path)
-        self.model = AutoModelForCausalLM.from_pretrained(model_path)
+        self.client = Groq(api_key=groq_api_key)
         
         # 預設提示模板
         self.templates = {
@@ -24,6 +23,12 @@ class ArtLessonGenerator:
 2. 所需材料
 3. 教學步驟
 4. 評量方式
+
+please use JSON format to answer, including the following fields:
+    "objectives": ["教學目標1", "教學目標2"...],
+    "materials": ["材料1", "材料2"...],
+    "steps": ["步驟1", "步驟2"...],
+    "evaluation": ["評量方式1", "評量方式2"...]
 """,
             "color": """生成一份幼兒園色彩繪畫教案:
 主題: {theme}
@@ -34,69 +39,16 @@ class ArtLessonGenerator:
 2. 所需材料
 3. 教學步驟
 4. 評量方式
+
+please use JSON format to answer, including the following fields:
+    'objectives': ["教學目標1", "教學目標2"...],
+    'materials': ["材料1", "材料2"...],
+    'steps': ["步驟1", "步驟2"...],
+    'evaluation': ["評量方式1", "評量方式2"...]
 """
         }
 
-    def prepare_training_data(self, raw_lessons: List[Dict]) -> pd.DataFrame:
-        """準備訓練資料
-        
-        Args:
-            raw_lessons: 原始教案資料列表
-            
-        Returns:
-            處理後的訓練資料DataFrame
-        """
-        processed_data = []
-        
-        for lesson in raw_lessons:
-            # 將教案轉換為結構化格式
-            processed = {
-                'input_text': self._create_prompt(lesson),
-                'target_text': self._format_lesson(lesson)
-            }
-            processed_data.append(processed)
-            
-        return pd.DataFrame(processed_data)
-
-    def _create_prompt(self, lesson: Dict) -> str:
-        """根據教案類型生成對應的提示
-        
-        Args:
-            lesson: 教案資料字典
-            
-        Returns:
-            格式化後的提示文字
-        """
-        template = self.templates[lesson['type']]
-        return template.format(
-            theme=lesson['theme'],
-            age=lesson['age'],
-            duration=lesson['duration']
-        )
-
-    def _format_lesson(self, lesson: Dict) -> str:
-        """將教案轉換為統一格式
-        
-        Args:
-            lesson: 教案資料字典
-            
-        Returns:
-            格式化後的教案文字
-        """
-        return f"""教學目標：
-{lesson['objectives']}
-
-所需材料：
-{lesson['materials']}
-
-教學步驟：
-{lesson['steps']}
-
-評量方式：
-{lesson['evaluation']}
-"""
-
-    def generate_lesson(self, lesson_type: str, theme: str, age: str, duration: int) -> str:
+    def generate_lesson(self, lesson_type: str, theme: str, age: str, duration: int) -> Dict:
         """生成新的教案
         
         Args:
@@ -106,36 +58,69 @@ class ArtLessonGenerator:
             duration: 課程時長(分鐘)
             
         Returns:
-            生成的教案文字
+            生成的教案字典
         """
+        print(f"Generating {lesson_type} lesson on '{theme}' for {age} students ({duration} minutes)")
         prompt = self.templates[lesson_type].format(
             theme=theme,
             age=age,
             duration=duration
         )
         
-        inputs = self.tokenizer(prompt, return_tensors="pt")
-        outputs = self.model.generate(inputs["input_ids"],max_length=1000,num_return_sequences=1,temperature=0.7,
-            no_repeat_ngram_size=3,
-            do_sample=True
+        completion = self.client.chat.completions.create(
+            model="llama-3.1-70b-versatile",
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            temperature=0.7,
+            max_tokens=1024,
+            top_p=1,
+            response_format={"type": "json_object"},
+            stream=False
         )
         
-        return self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+        return json.loads(completion.choices[0].message.content)
 
-    def save_lesson(self, lesson: str, file_path: str):
+    def _format_lesson(self, lesson_dict: Dict) -> str:
+        """將教案字典格式化為文字
+        
+        Args:
+            lesson_dict: 教案字典
+            
+        Returns:
+            格式化後的教案文字
+        """
+        return f"""教學目標：
+{''.join(f'- {obj}\n' for obj in lesson_dict['objectives'])}
+
+所需材料：
+{''.join(f'- {mat}\n' for mat in lesson_dict['materials'])}
+
+教學步驟：
+{''.join(f'{i+1}. {step}\n' for i, step in enumerate(lesson_dict['steps']))}
+
+評量方式：
+{''.join(f'- {eval}\n' for eval in lesson_dict['evaluation'])}
+"""
+
+    def save_lesson(self, lesson: Dict, file_path: str):
         """儲存生成的教案
         
         Args:
-            lesson: 教案內容
+            lesson: 教案字典
             file_path: 儲存路徑
         """
+        formatted_lesson = self._format_lesson(lesson)
         with open(file_path, 'w', encoding='utf-8') as f:
-            f.write(lesson)
+            f.write(formatted_lesson)
 
 # 使用範例
 def main():
-    # 初始化生成器
-    generator = ArtLessonGenerator("shenzhi-wang/Llama3.1-70B-Chinese-Chat")
+    # 初始化生成器（請替換為您的API密鑰）
+    generator = ArtLessonGenerator("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")
     
     # 生成幾何圖形教案
     geometry_lesson = generator.generate_lesson(
